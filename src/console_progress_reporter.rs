@@ -1,8 +1,8 @@
 use crate::crawler_progress_event::CrawlerProcessEvent;
 use crate::crawler_state::CrawlerState;
-use crossterm::{QueueableCommand, execute, queue, ExecutableCommand};
+use crossterm::{ExecutableCommand, QueueableCommand, queue};
 use std::collections::HashMap;
-use std::io::{Write, stdout, Stdout};
+use std::io::{Stdout, Write, stdout};
 use std::sync::Arc;
 use tokio::select;
 use url::Url;
@@ -23,72 +23,84 @@ struct ConsoleState {
 
 #[derive(Clone)]
 pub struct ConsoleProcessReporter {
-    event_tx: tokio::sync::mpsc::Sender<CrawlerProcessEvent>,
-    shutdown_notify: Arc<tokio::sync::Notify>,
+    event_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<CrawlerProcessEvent>>>>,
+    // shutdown_notify: Arc<tokio::sync::Notify>,
+    // shutdown_completed: Arc<tokio::sync::Notify>,
 }
 
 impl ConsoleProcessReporter {
     pub fn new() -> Self {
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<CrawlerProcessEvent>(100);
-
-        let shutdown_notify = Arc::new(tokio::sync::Notify::new());
-        {
-            let shutdown_notify = Arc::clone(&shutdown_notify);
-            tokio::task::spawn(async move {
-                let mut console_state = ConsoleState {
-                    stdout: stdout(),
-                    crawlers: HashMap::new(),
-                };
-                
-                let _ = ConsoleProcessReporter::console_setup(&mut console_state).await;
-                
-                let mut shutdown_requested = false;
-                while !shutdown_requested {
-                    select! {
-                        progress_event = event_rx.recv() => {
-                            match progress_event {
-                                Some(progress_event) => {
-                                    let _ = ConsoleProcessReporter::handle_event(progress_event, &mut console_state).await;
-                                    let _ = ConsoleProcessReporter::console_redraw(&console_state).await;
-                                },
-                                None => {
-                                    shutdown_requested = true;
-                                }
-                            }
-                        }
-                        _ = shutdown_notify.notified() => {
-                            shutdown_requested = true;
-                        }
-                    }
-                }
-                
-                let _ = ConsoleProcessReporter::console_teardown(&mut console_state).await;
-            });
-        }
         Self {
-            event_tx,
-            shutdown_notify,
+            event_tx: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
     pub fn event_tx(&self) -> tokio::sync::mpsc::Sender<CrawlerProcessEvent> {
-        self.event_tx.clone()
+        let event_tx = Arc::clone(&self.event_tx);
+        futures::executor::block_on(async move {
+            let mut mtx = event_tx.lock().await;
+            mtx.clone().unwrap()
+        })
     }
-    
-    async fn console_setup(state: &mut ConsoleState) -> anyhow::Result<()> {
-        let mut stdout = &state.stdout;
-        crossterm::terminal::enable_raw_mode()?;
-        stdout.execute(crossterm::terminal::EnterAlternateScreen)?;
-        stdout.execute(crossterm::cursor::Hide)?;
-        stdout.execute(crossterm::terminal::Clear(crossterm::terminal::ClearType::All))?;
+
+    pub async fn run(&mut self, shutdown_notify: Arc<tokio::sync::Notify>) -> anyhow::Result<()> {
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<CrawlerProcessEvent>(100);
+        {
+            let mut mtx = self.event_tx.lock().await;
+            mtx.replace(event_tx);
+        }
+
+        let mut console_state = ConsoleState {
+            stdout: stdout(),
+            crawlers: HashMap::new(),
+        };
+
+        let _ = ConsoleProcessReporter::console_setup(&mut console_state).await;
+
+        let mut shutdown_requested = false;
+        while !shutdown_requested {
+            select! {
+                progress_event = event_rx.recv() => {
+                    match progress_event {
+                        Some(progress_event) => {
+                            let _ = ConsoleProcessReporter::handle_event(progress_event, &mut console_state).await;
+                            let _ = ConsoleProcessReporter::console_redraw(&console_state).await;
+                        },
+                        None => {
+                            shutdown_requested = true;
+                        }
+                    }
+                }
+                _ = shutdown_notify.notified() => {
+                    shutdown_requested = true;
+                }
+            }
+        }
+
+        let _ = ConsoleProcessReporter::console_teardown(&mut console_state).await;
+
+        {
+            let mut mtx = self.event_tx.lock().await;
+            mtx.take();
+        }
+
         Ok(())
     }
-    
-    async fn console_teardown(state: &mut ConsoleState,) -> anyhow::Result<()> {
+
+    async fn console_setup(state: &mut ConsoleState) -> anyhow::Result<()> {
+        let mut stdout = &state.stdout;
+        stdout.execute(crossterm::terminal::EnterAlternateScreen)?;
+        stdout.execute(crossterm::cursor::Hide)?;
+        stdout.execute(crossterm::terminal::Clear(
+            crossterm::terminal::ClearType::All,
+        ))?;
+        Ok(())
+    }
+
+    async fn console_teardown(state: &mut ConsoleState) -> anyhow::Result<()> {
         let mut stdout = &state.stdout;
         stdout.execute(crossterm::cursor::Show)?;
         stdout.execute(crossterm::terminal::LeaveAlternateScreen)?;
-        crossterm::terminal::disable_raw_mode()?;
         Ok(())
     }
 
@@ -103,7 +115,7 @@ impl ConsoleProcessReporter {
             if index > 0 {
                 queue!(stdout, crossterm::cursor::MoveToNextLine(2))?;
             }
-            
+
             let state_str = {
                 match crawler_info.state {
                     CrawlerState::Crawling => "Crawling",
@@ -114,16 +126,19 @@ impl ConsoleProcessReporter {
             queue!(
                 stdout,
                 crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
-                crossterm::style::Print(format!("Crawling: {} ({})", crawler_info.url.to_owned(), state_str)),
+                crossterm::style::Print(format!(
+                    "Crawling: {} ({})",
+                    crawler_info.url.to_owned(),
+                    state_str
+                )),
                 crossterm::cursor::MoveToNextLine(1),
                 crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
                 crossterm::style::Print(format!(
                     "   # URLs Remaining: {}, # URLS Crawled: {}",
-                    crawler_info.num_urls_to_crawl,
-                    crawler_info.num_urls_crawled
+                    crawler_info.num_urls_to_crawl, crawler_info.num_urls_crawled
                 )),
             )?;
-            
+
             if let Some(message) = &crawler_info.message {
                 queue!(
                     stdout,
@@ -164,6 +179,14 @@ impl ConsoleProcessReporter {
                     crawler_info.num_urls_to_crawl = num_urls_to_crawl;
                 }
             }
+            CrawlerProcessEvent::ProgressMessage {
+                crawler_index,
+                message,
+            } => {
+                if let Some(crawler_info) = state.crawlers.get_mut(&crawler_index) {
+                    crawler_info.message = Some(message);
+                }
+            }
             CrawlerProcessEvent::CrawlerStateChanged {
                 crawler_index,
                 state: crawler_state,
@@ -177,11 +200,5 @@ impl ConsoleProcessReporter {
             }
         }
         Ok(())
-    }
-}
-
-impl Drop for ConsoleProcessReporter {
-    fn drop(&mut self) {
-        self.shutdown_notify.notify_waiters();
     }
 }

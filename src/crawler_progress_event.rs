@@ -12,6 +12,10 @@ pub enum CrawlerProcessEvent {
         num_urls_to_crawl: usize,
         num_urls_crawled: usize,
     },
+    ProgressMessage {
+        crawler_index: usize,
+        message: String,
+    },
     CrawlerStateChanged {
         crawler_index: usize,
         state: CrawlerState,
