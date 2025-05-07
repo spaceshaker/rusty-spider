@@ -4,6 +4,8 @@ use crate::progress_reporter::ProgressReporter;
 use crate::{CrawlError, CrawlRequest, CrawlResponse, CrawlSummary, CrawlerConfig, PageSummary};
 use anyhow::anyhow;
 use std::collections::HashSet;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use url::Url;
 
 #[derive(Clone)]
@@ -32,7 +34,7 @@ impl CrawlContext {
             self.add_url_to_crawl(url);
         }
     }
-    
+
     pub fn pop_url_to_crawl(&mut self) -> Option<Url> {
         self.urls_to_crawl.iter().next().cloned().and_then(|url| {self.urls_to_crawl.take(&url)})
     }
@@ -84,6 +86,7 @@ pub struct SeedCrawler<TP>
 where
     TP: ProgressReporter,
 {
+    shutdown_notify: Arc<tokio::sync::Notify>,
     index: usize,
     seed: Url,
     progress_reporter: TP,
@@ -93,8 +96,9 @@ impl<TP> SeedCrawler<TP>
 where
     TP: ProgressReporter,
 {
-    pub fn new(index: usize, seed: Url, progress_reporter: TP) -> Self {
+    pub fn new(shutdown_notify: Arc<tokio::sync::Notify>, index: usize, seed: Url, progress_reporter: TP) -> Self {
         Self {
+            shutdown_notify,
             index,
             seed,
             progress_reporter,
@@ -110,6 +114,16 @@ where
     }
 
     pub async fn crawl(&self, config: CrawlerConfig) -> anyhow::Result<CrawlSummary> {
+        let shutdown_requested = Arc::new(AtomicBool::new(false));
+        {
+            let shutdown_notify = Arc::clone(&self.shutdown_notify);
+            let shutdown_requested = Arc::clone(&shutdown_requested);
+            tokio::task::spawn(async move {
+                shutdown_notify.notified().await;
+                shutdown_requested.store(true, std::sync::atomic::Ordering::Relaxed);
+            });
+        }
+
         self.progress_reporter.begin();
 
         let crawl_delay: Option<tokio::time::Duration> = {
@@ -133,7 +147,7 @@ where
             .crawler_state_changed(CrawlerState::Crawling);
 
         let mut crawl_summary = CrawlSummary::default();
-        while !crawl_context.is_crawling_complete() {
+        while !shutdown_requested.load(std::sync::atomic::Ordering::Relaxed) && !crawl_context.is_crawling_complete() {
             let crawl_progress = crawl_context.progress();
             self.progress_reporter
                 .progress_update(crawl_progress.0, crawl_progress.1);
@@ -147,8 +161,8 @@ where
                 PageCrawlOutput::HttpError(url, status_code) => {
                     Some(PageSummary::from_status_code(url, status_code))
                 }
-                PageCrawlOutput::NoMoreUrlsToCrawl => { 
-                    None 
+                PageCrawlOutput::NoMoreUrlsToCrawl => {
+                    None
                 },
                 PageCrawlOutput::DeniedByRobotsTxt(url) => {
                     Some(PageSummary::from_status_code(url, 403))
@@ -160,6 +174,10 @@ where
 
             if let Some(crawl_delay) = crawl_delay {
                 if !crawl_context.is_crawling_complete() {
+                    if shutdown_requested.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+
                     self.progress_reporter
                         .crawler_state_changed(CrawlerState::Paused);
                     tokio::time::sleep(crawl_delay).await;
@@ -236,11 +254,6 @@ where
 
         let crawl_response = reqwest::get(url_to_crawl.clone()).await?;
         if !crawl_response.status().is_success() {
-            println!(
-                "Failed to fetch {}: {}",
-                url_to_crawl,
-                crawl_response.status()
-            );
             return Err(CrawlError::HttpError(crawl_response.status().as_u16()));
         }
         let status_code = crawl_response.status().as_u16();

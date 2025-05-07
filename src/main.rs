@@ -2,19 +2,19 @@ use crate::crawler::SeedCrawler;
 use crate::crawler_progress_reporter::CrawlerProgressReporter;
 use clap::Parser;
 use console_progress_reporter::ConsoleProcessReporter;
+use futures::future::join_all;
 use std::process;
 use std::sync::Arc;
-use futures::future::join_all;
 use tokio::select;
 use tokio::task::JoinHandle;
 use url::Url;
 
 mod console_progress_reporter;
+mod crawler;
 mod crawler_progress_event;
 mod crawler_progress_reporter;
 mod crawler_state;
 mod progress_reporter;
-mod crawler;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -76,11 +76,8 @@ impl PageSummary {
             num_outgoing_links,
         }
     }
-    
-    pub fn from_status_code(
-        url: Url,
-        status_code: u16,
-    ) -> Self {
+
+    pub fn from_status_code(url: Url, status_code: u16) -> Self {
         Self {
             url,
             status_code,
@@ -100,7 +97,7 @@ impl CrawlSummary {
     pub fn new(crawl_summaries: Vec<PageSummary>) -> Self {
         Self { crawl_summaries }
     }
-    
+
     pub fn add_page_summary(&mut self, page_summary: PageSummary) {
         self.crawl_summaries.push(page_summary);
     }
@@ -139,13 +136,74 @@ struct CrawlerConfig {
     requests_per_second: Option<f64>,
 }
 
+#[derive(Clone)]
+struct MultiCrawler {
+    shutdown_notify: Arc<tokio::sync::Notify>,
+    crawler_config: CrawlerConfig,
+    console_process_reporter: ConsoleProcessReporter,
+    seeds: Vec<Url>,
+}
+
+impl MultiCrawler {
+    pub fn new(
+        shutdown_notify: Arc<tokio::sync::Notify>,
+        crawler_config: CrawlerConfig,
+        console_process_reporter: ConsoleProcessReporter,
+    ) -> Self {
+        Self {
+            shutdown_notify,
+            crawler_config,
+            console_process_reporter,
+            seeds: Vec::new(),
+        }
+    }
+
+    pub fn add_seed(&mut self, seed: Url) {
+        self.seeds.push(seed);
+    }
+
+    pub async fn run(self) -> anyhow::Result<Vec<CrawlSummary>> {
+        let shutdown_notify = Arc::clone(&self.shutdown_notify);
+        let console_process_reporter = self.console_process_reporter.clone();
+        let crawler_config = self.crawler_config.clone();
+        let handles = self
+            .seeds
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(crawler_index, seed)| {
+                let shutdown_notify = Arc::clone(&shutdown_notify);
+                let console_reporter = console_process_reporter.clone();
+                let crawler_config = crawler_config.clone();
+                tokio::task::spawn(async move {
+                    let progress_reporter = CrawlerProgressReporter::new(
+                        crawler_index,
+                        seed.clone(),
+                        console_reporter.event_tx(),
+                    );
+                    let seed_crawler =
+                        SeedCrawler::new(shutdown_notify, crawler_index, seed.clone(), progress_reporter);
+                    let crawl_summary = seed_crawler.crawl(crawler_config).await?;
+                    Ok::<CrawlSummary, anyhow::Error>(crawl_summary)
+                })
+            })
+            .collect::<Vec<JoinHandle<anyhow::Result<CrawlSummary>>>>();
+        let all_tasks = join_all(handles).await;
+        let results: Vec<CrawlSummary> = all_tasks
+            .into_iter()
+            .filter_map(|task_result| task_result.ok().and_then(|res| res.ok()))
+            .collect();
+        Ok(results)
+    }
+}
+
 async fn main_impl(args: &CommandLineArgs) -> anyhow::Result<()> {
     let crawler_config = CrawlerConfig {
         max_pages: args.max_pages,
         max_depth: args.max_depth,
         requests_per_second: args.rate,
     };
-    
+
     // Set up a shutdown signal handler
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());
     {
@@ -166,50 +224,62 @@ async fn main_impl(args: &CommandLineArgs) -> anyhow::Result<()> {
                 console_reporter.run(shutdown_notify).await.unwrap();
             })
         };
-        
-        let mut results: Vec<JoinHandle<anyhow::Result<CrawlSummary>>> = Vec::new();
-        for (crawler_index, seed_str) in args.seed.iter().enumerate() {
-            let seed_url = Url::parse(seed_str)?;
 
-            let crawler_config = crawler_config.clone();
-            let console_reporter = console_reporter.clone();
-            let handle = tokio::task::spawn(async move {
-                let progress_reporter = CrawlerProgressReporter::new(
-                    crawler_index,
-                    seed_url.clone(),
-                    console_reporter.event_tx(),
-                );
-                let seed_crawler = SeedCrawler::new(crawler_index, seed_url, progress_reporter);
-                let crawl_summary = seed_crawler.crawl(crawler_config).await?;
-                Ok::<CrawlSummary, anyhow::Error>(crawl_summary)
-            });
-            results.push(handle);
+        let mut multi_crawler = MultiCrawler::new(shutdown_notify.clone(), crawler_config.clone(), console_reporter.clone());
+        for seed_str in &args.seed {
+            let seed_url = Url::parse(seed_str)?;
+            multi_crawler.add_seed(seed_url);
         }
+        let multi_crawler_handle = tokio::task::spawn(async move {
+            let results = multi_crawler.run().await?;
+            Ok::<Vec<CrawlSummary>, anyhow::Error>(results)
+        });
         
-        let all_tasks = join_all(results);
+        let crawl_results = multi_crawler_handle.await??;
+        r.extend_from_slice(crawl_results.as_slice());
         
-        select! {
-            results = all_tasks => {
-                for result in results {
-                    match result {
-                        Ok(crawl_summary) => {
-                            r.push(crawl_summary?);
-                        }
-                        Err(e) => {
-                            eprintln!("Error: {}", e);
-                        }
-                    }
-                }
-            },
-            _ = shutdown_notify.notified() => {
-                // Do nothing
-            }
-        }
-        
-        
-        shutdown_notify.notified().await;
+        // let mut results: Vec<JoinHandle<anyhow::Result<CrawlSummary>>> = Vec::new();
+        // for (crawler_index, seed_str) in args.seed.iter().enumerate() {
+        //     let seed_url = Url::parse(seed_str)?;
+        // 
+        //     let crawler_config = crawler_config.clone();
+        //     let console_reporter = console_reporter.clone();
+        //     let handle = tokio::task::spawn(async move {
+        //         let progress_reporter = CrawlerProgressReporter::new(
+        //             crawler_index,
+        //             seed_url.clone(),
+        //             console_reporter.event_tx(),
+        //         );
+        //         let seed_crawler = SeedCrawler::new(crawler_index, seed_url, progress_reporter);
+        //         let crawl_summary = seed_crawler.crawl(crawler_config).await?;
+        //         Ok::<CrawlSummary, anyhow::Error>(crawl_summary)
+        //     });
+        //     results.push(handle);
+        //}
+
+        // let all_tasks = join_all(results);
+        // 
+        // select! {
+        //     results = all_tasks => {
+        //         for result in results {
+        //             match result {
+        //                 Ok(crawl_summary) => {
+        //                     r.push(crawl_summary?);
+        //                 }
+        //                 Err(e) => {
+        //                     eprintln!("Error: {}", e);
+        //                 }
+        //             }
+        //         }
+        //     },
+        //     _ = shutdown_notify.notified() => {
+        //         // Do nothing
+        //     }
+        // }
+        // 
+        // shutdown_notify.notified().await;
     }
-    
+
     for crawl_summary in r {
         for page_summary in crawl_summary.crawl_summaries {
             println!(
@@ -222,7 +292,7 @@ async fn main_impl(args: &CommandLineArgs) -> anyhow::Result<()> {
             );
         }
     }
-    
+
     Ok(())
 }
 
