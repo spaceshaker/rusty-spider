@@ -1,5 +1,5 @@
 use url::Url;
-use crate::crawler_state::CrawlerState;
+use crate::crawler::crawler_state::CrawlerState;
 
 #[derive(Debug, Clone)]
 pub enum CrawlerProcessEvent {

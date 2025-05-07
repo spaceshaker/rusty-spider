@@ -1,7 +1,7 @@
 use url::Url;
-use crate::crawler_progress_event::CrawlerProcessEvent;
-use crate::crawler_state::CrawlerState;
-use crate::progress_reporter::ProgressReporter;
+use crate::crawler::crawler_progress_event::CrawlerProcessEvent;
+use crate::crawler::crawler_state::CrawlerState;
+use crate::crawler::progress_reporter::ProgressReporter;
 
 #[derive(Clone)]
 pub struct CrawlerProgressReporter {

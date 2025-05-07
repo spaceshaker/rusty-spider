@@ -1,12 +1,17 @@
 use crate::crawler::{RobotsTxtMatcher, RobotsTxtSource};
-use crate::crawler_state::CrawlerState;
-use crate::progress_reporter::ProgressReporter;
-use crate::{CrawlError, CrawlRequest, CrawlResponse, CrawlSummary, CrawlerConfig, PageSummary};
+use crate::crawler::crawler_state::CrawlerState;
+use crate::crawler::progress_reporter::ProgressReporter;
+use crate::crawler::crawler_config::CrawlerConfig;
 use anyhow::anyhow;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use url::Url;
+use crate::crawler::crawl_error::CrawlError;
+use crate::crawler::crawl_request::CrawlRequest;
+use crate::crawler::crawl_response::CrawlResponse;
+use crate::crawler::crawl_summary::CrawlSummary;
+use crate::crawler::page_summary::PageSummary;
 
 #[derive(Clone)]
 struct CrawlContext {
@@ -87,7 +92,6 @@ where
     TP: ProgressReporter,
 {
     shutdown_notify: Arc<tokio::sync::Notify>,
-    index: usize,
     seed: Url,
     progress_reporter: TP,
 }
@@ -96,21 +100,13 @@ impl<TP> SeedCrawler<TP>
 where
     TP: ProgressReporter,
 {
-    pub fn new(shutdown_notify: Arc<tokio::sync::Notify>, index: usize, seed: Url, progress_reporter: TP) -> Self {
+    pub fn new(shutdown_notify: Arc<tokio::sync::Notify>, seed: Url, progress_reporter: TP) -> Self {
         Self {
             shutdown_notify,
-            index,
+            //index,
             seed,
             progress_reporter,
         }
-    }
-
-    pub fn index(&self) -> usize {
-        self.index
-    }
-
-    pub fn seed(&self) -> &Url {
-        &self.seed
     }
 
     pub async fn crawl(&self, config: CrawlerConfig) -> anyhow::Result<CrawlSummary> {
@@ -127,7 +123,7 @@ where
         self.progress_reporter.begin();
 
         let crawl_delay: Option<tokio::time::Duration> = {
-            if let Some(requests_per_second) = config.requests_per_second {
+            if let Some(requests_per_second) = config.requests_per_second() {
                 let crawl_delay_in_ms = (1000.0 / requests_per_second) as u64;
                 Some(tokio::time::Duration::from_millis(crawl_delay_in_ms))
             } else {

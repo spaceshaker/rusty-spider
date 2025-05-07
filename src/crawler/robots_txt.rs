@@ -42,6 +42,7 @@ impl RobotsTxtSource {
 
 #[derive(Clone)]
 pub struct RobotsTxtView<'a> {
+    #[allow(dead_code)]
     content: &'a str,
     robot: Robots<'a>,
     agent: String,

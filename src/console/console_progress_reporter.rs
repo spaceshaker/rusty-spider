@@ -1,5 +1,5 @@
-use crate::crawler_progress_event::CrawlerProcessEvent;
-use crate::crawler_state::CrawlerState;
+use crate::crawler::crawler_progress_event::CrawlerProcessEvent;
+use crate::crawler::crawler_state::CrawlerState;
 use crossterm::{ExecutableCommand, QueueableCommand, queue};
 use std::collections::HashMap;
 use std::io::{Stdout, Write, stdout};
@@ -24,8 +24,6 @@ struct ConsoleState {
 #[derive(Clone)]
 pub struct ConsoleProcessReporter {
     event_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<CrawlerProcessEvent>>>>,
-    // shutdown_notify: Arc<tokio::sync::Notify>,
-    // shutdown_completed: Arc<tokio::sync::Notify>,
 }
 
 impl ConsoleProcessReporter {
@@ -38,7 +36,7 @@ impl ConsoleProcessReporter {
     pub fn event_tx(&self) -> tokio::sync::mpsc::Sender<CrawlerProcessEvent> {
         let event_tx = Arc::clone(&self.event_tx);
         futures::executor::block_on(async move {
-            let mut mtx = event_tx.lock().await;
+            let mtx = event_tx.lock().await;
             mtx.clone().unwrap()
         })
     }
