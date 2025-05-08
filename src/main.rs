@@ -2,7 +2,7 @@ use clap::Parser;
 use console::console_progress_reporter::ConsoleProcessReporter;
 use crawler::crawl_summary::CrawlSummary;
 use crawler::crawler_config::CrawlerConfig;
-use crawler::multi_crawler::MultiCrawler;
+use crawler::multi::MultiCrawler;
 use std::process;
 use std::sync::Arc;
 use url::Url;
@@ -38,7 +38,6 @@ async fn main_impl(args: &CommandLineArgs) -> anyhow::Result<()> {
     {
         let shutdown_notify = Arc::clone(&shutdown_notify);
         ctrlc::set_handler(move || {
-            println!("Received Ctrl+C, shutting down...");
             shutdown_notify.notify_waiters();
         })?;
     }

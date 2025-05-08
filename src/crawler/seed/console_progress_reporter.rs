@@ -1,22 +1,22 @@
 use url::Url;
-use crate::crawler::crawler_progress_event::CrawlerProcessEvent;
-use crate::crawler::crawler_state::CrawlerState;
-use crate::crawler::progress_reporter::ProgressReporter;
+use crate::console::crawler_progress_event::CrawlerProcessEvent;
+use crate::console::crawler_state::CrawlerState;
+use crate::crawler::seed::progress_reporter::ProgressReporter;
 
 #[derive(Clone)]
-pub struct CrawlerProgressReporter {
+pub struct ConsoleProgressReporter {
     index: usize,
     url: Url,
     event_tx: tokio::sync::mpsc::Sender<CrawlerProcessEvent>,
 }
 
-impl CrawlerProgressReporter {
+impl ConsoleProgressReporter {
     pub fn new(index: usize, url: Url, event_tx: tokio::sync::mpsc::Sender<CrawlerProcessEvent>) -> Self {
         Self { index, url, event_tx }
     }
 }
 
-impl ProgressReporter for CrawlerProgressReporter {
+impl ProgressReporter for ConsoleProgressReporter {
     fn begin(&self) {
         futures::executor::block_on(async {
             let _ = self.event_tx.send(CrawlerProcessEvent::Begin {

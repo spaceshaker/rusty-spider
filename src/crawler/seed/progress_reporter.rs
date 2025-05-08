@@ -1,4 +1,4 @@
-use crate::crawler::crawler_state::CrawlerState;
+use crate::console::crawler_state::CrawlerState;
 
 pub trait ProgressReporter {
     fn begin(&self);

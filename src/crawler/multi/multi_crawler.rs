@@ -4,9 +4,9 @@ use tokio::task::JoinHandle;
 use futures::future::join_all;
 use crate::console::console_progress_reporter::ConsoleProcessReporter;
 use crate::crawler::crawl_summary::CrawlSummary;
-use crate::crawler::SeedCrawler;
 use crate::crawler::crawler_config::CrawlerConfig;
-use crate::crawler::crawler_progress_reporter::CrawlerProgressReporter;
+use crate::crawler::seed::ConsoleProgressReporter;
+use crate::crawler::seed::SeedCrawler;
 
 #[derive(Clone)]
 pub struct MultiCrawler {
@@ -48,7 +48,7 @@ impl MultiCrawler {
                 let console_reporter = console_process_reporter.clone();
                 let crawler_config = crawler_config.clone();
                 tokio::task::spawn(async move {
-                    let progress_reporter = CrawlerProgressReporter::new(
+                    let progress_reporter = ConsoleProgressReporter::new(
                         crawler_index,
                         seed.clone(),
                         console_reporter.event_tx(),

@@ -1,6 +1,7 @@
+use url::Url;
 use reqwest::StatusCode;
 use robots_txt::Robots;
-use url::Url;
+use crate::crawler::robots::robots_txt_view::RobotsTxtView;
 
 #[derive(Clone)]
 pub struct RobotsTxtSource {
@@ -32,37 +33,6 @@ impl RobotsTxtSource {
     pub fn view(&self) -> RobotsTxtView<'_> {
         let context = self.content.as_str();
         let robot = Robots::from_str_lossy(context);
-        RobotsTxtView {
-            content: context,
-            robot,
-            agent: self.agent.clone(),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct RobotsTxtView<'a> {
-    #[allow(dead_code)]
-    content: &'a str,
-    robot: Robots<'a>,
-    agent: String,
-}
-
-impl<'a> RobotsTxtView<'a> {
-    pub fn matcher(&self) -> RobotsTxtMatcher<'_> {
-        let matcher = robots_txt::matcher::SimpleMatcher::new(
-            &self.robot.choose_section(self.agent.as_str()).rules,
-        );
-        RobotsTxtMatcher { matcher }
-    }
-}
-
-pub struct RobotsTxtMatcher<'a> {
-    matcher: robots_txt::matcher::SimpleMatcher<'a>,
-}
-
-impl<'a> RobotsTxtMatcher<'a> {
-    pub fn check_path(&self, path: &str) -> bool {
-        self.matcher.check_path(path)
+        RobotsTxtView::new(context, robot, self.agent.clone())
     }
 }

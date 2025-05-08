@@ -1,11 +1,11 @@
-use crate::crawler::crawler_progress_event::CrawlerProcessEvent;
-use crate::crawler::crawler_state::CrawlerState;
 use crossterm::{ExecutableCommand, QueueableCommand, queue};
 use std::collections::HashMap;
 use std::io::{Stdout, Write, stdout};
 use std::sync::Arc;
 use tokio::select;
 use url::Url;
+use crate::console::crawler_progress_event::CrawlerProcessEvent;
+use crate::console::crawler_state::CrawlerState;
 
 struct CrawlerInfo {
     index: usize,
